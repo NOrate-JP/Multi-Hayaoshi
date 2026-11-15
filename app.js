@@ -25,6 +25,8 @@
   // ---------- state ----------
   var base, isHost = false, me = null, joinShown = false, builtN = 0;
   var DEF = ['#e5483b','#f08a24','#f2c200','#2fa35b','#1fa6a0','#2f78e0','#5b4fd6','#9a4fc9','#d9488f','#6b7a89'];
+  var STL = { idle: '待機中', open: '受付中', closed: '締切' };
+  var PRE = [['赤','#e5483b'],['青','#2f78e0'],['黄','#f2c200'],['緑','#2fa35b'],['紫','#9a4fc9'],['橙','#f08a24'],['桃','#ec6fa8'],['白','#ffffff'],['黒','#222831']];
   var cfg = { n: 4, max: 0, showResults: true, labels: {} }, round = null, players = {}, presses = {}, pRef = null;
 
   function label(i) { var v = cfg.labels && cfg.labels[i]; return v != null && v !== '' ? v : String(i % 10); }
@@ -133,24 +135,28 @@
   // ---------- host ----------
   function buildHost() {
     var url = location.origin + location.pathname + '?room=' + room;
-    app.innerHTML = '<div class="top"><div><b>マルチ早押し</b>　<span class="code">' + room + '</span></div><button id="cp">参加URLをコピー</button></div>' +
-      '<div class="host"><section class="card wide" id="stg"></section><section class="card" id="ctl"></section>' +
-      '<section class="card"><h3>設定</h3><div class="row"><label>ボタン数（1〜10）<input type="number" id="sn" min="1" max="10"></label>' +
-      '<label>1人が押せる数<input type="number" id="sm" min="0" max="10"></label><small>0 = 制限なし</small></div>' +
-      '<p class="mut" style="margin:4px 0">ラベル（空欄ならキー番号を表示）</p><div class="labs" id="labs"></div></section>' +
-      '<section class="card wide"><h3>結果</h3><div id="res"></div></section>' +
-      '<section class="card wide"><h3>参加者</h3><ul class="plist" id="ply"></ul><div class="row"><button id="clr">全問の履歴を削除</button></div></section></div>';
+    app.innerHTML = '<div class="top"><div class="row"><span class="code">' + room + '</span></div><div class="row" id="ctl"></div><div class="row"><button id="cp">参加URL</button><button id="mn">設定</button></div></div>' +
+      '<div id="stg"></div>' +
+      '<div class="dlg" id="dlg" hidden><div class="dbox"><div class="row"><h3 style="margin:0;flex:1">設定</h3><button id="dx">閉じる</button></div>' +
+      '<div class="row"><label>ボタン数（1〜10）<input type="number" id="sn" min="1" max="10"></label><label>1人が押せる数<input type="number" id="sm" min="0" max="10"></label><small>0 = 制限なし</small></div>' +
+      '<p class="mut" style="margin:4px 0">ボタンの内容と色（ラベルが空ならキー番号。色はプリセットか自由選択）</p><div class="labs" id="labs"></div>' +
+      '<label class="row"><input type="checkbox" id="shw" data-a="show"> パネル・タイムラインを参加者にも表示する</label>' +
+      '<h3>詳細結果</h3><div id="res"></div><h3>参加者</h3><ul class="plist" id="ply"></ul><div class="row"><button id="clr">全問の履歴を削除</button></div></div></div>';
+    $('mn').onclick = function () { $('dlg').hidden = false; };
+    $('dx').onclick = function () { $('dlg').hidden = true; };
+    $('dlg').onclick = function (e) { if (e.target.id === 'dlg') $('dlg').hidden = true; };
     $('cp').onclick = function () { (navigator.clipboard ? navigator.clipboard.writeText(url) : Promise.reject()).then(function () { $('cp').textContent = 'コピーしました'; }, function () { prompt('参加URL', url); }); };
     $('sn').oninput = function () { var v = Math.max(1, Math.min(10, +this.value || 0)); if (this.value !== '' && v) base.child('config/n').set(v); };
     $('sm').oninput = function () { var v = Math.max(0, Math.min(10, +this.value || 0)); base.child('config/max').set(v); };
-    $('labs').oninput = function (e) { if (e.target.dataset.l) base.child('config/labels/' + e.target.dataset.l).set(e.target.value); if (e.target.dataset.c) base.child('config/colors/' + e.target.dataset.c).set(e.target.value); };
+    $('labs').oninput = function (e) { if (e.target.dataset.l) base.child('config/labels/' + e.target.dataset.l).set(e.target.value); if (e.target.dataset.c) base.child('config/colors/' + e.target.dataset.c).set(e.target.value);
+      if (e.target.dataset.p && e.target.value) { var v = e.target.value, ci = e.target.parentNode.querySelector('[data-c]'); ci.value = v; base.child('config/colors/' + e.target.dataset.p).set(v); e.target.value = ''; } };
     $('ctl').onclick = function (e) {
       var a = e.target.dataset.a, r = base.child('round');
       if (a === 'start') r.update({ state: 'open', openedAt: Math.round(nowS()) });
       if (a === 'stop') r.update({ state: 'closed' });
       if (a === 'next') r.set({ id: round.id + 1, state: 'idle' });
     };
-    $('ctl').onchange = function (e) { if (e.target.dataset.a === 'show') base.child('config/showResults').set(e.target.checked); };
+    $('dlg').onchange = function (e) { if (e.target.dataset.a === 'show') base.child('config/showResults').set(e.target.checked); };
     $('clr').onclick = function () { if (confirm('これまでの押下記録をすべて削除します。よろしいですか？')) base.child('presses').remove(); };
   }
   function renderLabs() {
@@ -160,15 +166,15 @@
     if (builtN === cfg.n) return;
     builtN = cfg.n;
     var h = '';
-    for (var i = 1; i <= cfg.n; i++) h += '<label class="lab"><span class="key">' + (i % 10) + '</span><input type="text" maxlength="12" data-l="' + i + '" value="' + esc(cfg.labels && cfg.labels[i] != null ? cfg.labels[i] : '') + '"><input type="color" data-c="' + i + '" value="' + color(i) + '"></label>';
+    var po = '<option value="">色</option>' + PRE.map(function (p) { return '<option value="' + p[1] + '">' + p[0] + '</option>'; }).join('');
+    for (var i = 1; i <= cfg.n; i++) h += '<label class="lab"><span class="key">' + (i % 10) + '</span><input type="text" maxlength="12" data-l="' + i + '" value="' + esc(cfg.labels && cfg.labels[i] != null ? cfg.labels[i] : '') + '"><input type="color" data-c="' + i + '" value="' + color(i) + '"><select data-p="' + i + '">' + po + '</select></label>';
     $('labs').innerHTML = h;
   }
   function renderHost() {
     var st = round.state;
-    $('ctl').innerHTML = '<div class="row"><span class="pill ' + st + '">' + { idle: '待機中', open: '受付中', closed: '締切' }[st] + '</span><b>第' + round.id + '問</b></div>' +
-      '<div class="row"><button class="pri" data-a="start"' + (st !== 'idle' ? ' disabled' : '') + '>受付開始</button>' +
-      '<button data-a="stop"' + (st !== 'open' ? ' disabled' : '') + '>締切</button><button data-a="next">次の問題へ</button></div>' +
-      '<label class="row"><input type="checkbox" data-a="show"' + (cfg.showResults ? ' checked' : '') + '> パネル・タイムラインを参加者にも表示する</label>';
+    $('ctl').innerHTML = '<span class="pill ' + st + '">' + STL[st] + '</span><button class="pri" data-a="start"' + (st !== 'idle' ? ' disabled' : '') + '>受付開始</button>' +
+      '<button data-a="stop"' + (st !== 'open' ? ' disabled' : '') + '>締切</button><button data-a="next">次の問題へ</button>';
+    $('shw').checked = !!cfg.showResults;
     $('stg').innerHTML = stageHTML();
     $('res').innerHTML = resultsHTML();
     var ids = Object.keys(players);
@@ -216,9 +222,8 @@
     }
     var msg = open ? (full ? '上限まで押しました' : '押せます！') : round.state === 'closed' ? '締切りました' : '出題を待っています…';
     var order = Object.keys(mine).sort(function (a, b) { return mine[a] - mine[b]; }).map(function (b) { return '<span class="chip" ' + sty(b) + '>' + esc(label(b)) + '</span>'; }).join(' ');
-    app.innerHTML = '<div class="top"><div><span class="code">' + room + '</span>　' + esc(me.name) + '</div><div class="row"><span class="pill ' + round.state + '">第' + round.id + '問</span><button id="rn">名前を変更</button></div></div>' +
-      '<div class="msg">' + msg + '</div>' + (cfg.showResults ? stageHTML() : '') + '<div class="grid" style="--cols:' + (cfg.n <= 4 ? cfg.n : cfg.n <= 6 ? 3 : 5) + '">' + g + '</div>' +
-      (order ? '<p>あなたが押した順：' + order + '</p>' : '') ;
+    app.innerHTML = '<div class="top"><div class="row"><span class="code">' + room + '</span><span>' + esc(me.name) + '</span><span class="pill ' + round.state + '">' + (full ? '上限' : STL[round.state]) + '</span></div><button id="rn">名前を変更</button></div>' +
+      '<div id="stg">' + (cfg.showResults ? stageHTML() : '') + '</div><div class="grid" style="--cols:' + (cfg.n <= 4 ? cfg.n : cfg.n <= 6 ? 3 : 5) + ';--cm:' + (cfg.n <= 4 ? 2 : 3) + '">' + g + '</div>';
     $('rn').onclick = function () {
       var n = (prompt('名前を入力', me.name) || '').trim(); if (!n) return;
       me.name = n; localStorage.setItem('mbp_' + room, JSON.stringify(me)); base.child('players/' + me.pid + '/name').set(n);
