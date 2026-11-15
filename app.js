@@ -27,7 +27,7 @@
   var DEF = ['#e5483b','#f08a24','#f2c200','#2fa35b','#1fa6a0','#2f78e0','#5b4fd6','#9a4fc9','#d9488f','#6b7a89'];
   var STL = { idle: '待機中', open: '受付中', closed: '締切' };
   var PRE = [['赤','#e5483b'],['青','#2f78e0'],['黄','#f2c200'],['緑','#2fa35b'],['紫','#9a4fc9'],['橙','#f08a24'],['桃','#ec6fa8'],['白','#ffffff'],['黒','#222831']];
-  var cfg = { n: 4, max: 0, showResults: true, labels: {} }, round = null, players = {}, presses = {}, pRef = null;
+  var cfg = { n: 4, max: 0, showResults: true, pubPress: true, lim: 0, labels: {} }, round = null, players = {}, presses = {}, pRef = null;
 
   function label(i) { var v = cfg.labels && cfg.labels[i]; return v != null && v !== '' ? v : String(i % 10); }
   function color(i) { var v = cfg.colors && cfg.colors[i]; return /^#[0-9a-f]{6}$/i.test(v || '') ? v : DEF[i - 1]; }
@@ -74,7 +74,7 @@
 
   function listen() {
     base.child('config').on('value', function (s) {
-      cfg = Object.assign({ n: 4, max: 0, showResults: true, labels: {} }, s.val());
+      cfg = Object.assign({ n: 4, max: 0, showResults: true, pubPress: true, lim: 0, labels: {} }, s.val());
       if (isHost) renderLabs();
       render();
     });
@@ -95,37 +95,45 @@
   function rows() {
     var out = [];
     for (var pid in presses) for (var b in presses[pid]) out.push({ pid: pid, b: +b, t: presses[pid][b] });
-    return out.sort(function (a, b) { return a.t - b.t; });
+    out.sort(function (a, b) { return a.t - b.t; });
+    var c = {};
+    out.forEach(function (x) { c[x.b] = (c[x.b] || 0) + 1; x.ok = !cfg.lim || c[x.b] <= cfg.lim; });
+    return out;
   }
 
   function resultsHTML() {
     var r = rows();
     if (!r.length) return '<p class="empty">まだ誰も押していません。</p>';
-    var t0 = r[0].t, op = round && round.openedAt, cnt = {}, sum = 0;
+    var t0 = r[0].t, op = round && round.openedAt, cnt = {}, sum = 0, nok = 0;
     var h = '<table class="tb"><tr><th>順</th><th>名前</th><th>ボタン</th><th>開始から</th><th>先頭との差</th></tr>';
     r.forEach(function (x, k) {
-      cnt[x.b] = (cnt[x.b] || 0) + 1; sum += Number(label(x.b));
-      h += '<tr><td>' + (k + 1) + '</td><td>' + esc(nm(x.pid)) + '</td><td><span class="chip" ' + sty(x.b) + '>' + esc(label(x.b)) + '</span></td><td>' +
+      if (x.ok) { cnt[x.b] = (cnt[x.b] || 0) + 1; sum += Number(label(x.b)); nok++; }
+      h += '<tr' + (x.ok ? '' : ' class="ng"') + '><td>' + (k + 1) + '</td><td>' + esc(nm(x.pid)) + '</td><td><span class="chip" ' + sty(x.b) + '>' + esc(label(x.b)) + '</span>' + (x.ok ? '' : ' <small>先着外</small>') + '</td><td>' +
         (op ? sec(x.t - op) : '–') + '</td><td>' + (k ? '+' + sec(x.t - t0) : '先頭') + '</td></tr>';
     });
     h += '</table><p class="row">';
     for (var i = 1; i <= cfg.n; i++) h += '<span><span class="chip" ' + sty(i) + '>' + esc(label(i)) + '</span> ×' + (cnt[i] || 0) + '</span>';
     var numeric = true;
     for (i = 1; i <= cfg.n; i++) if (label(i) === '' || isNaN(Number(label(i)))) numeric = false;
-    if (numeric) h += '<span>合計 <b>' + sum + '</b>　平均 <b>' + (sum / r.length).toFixed(2) + '</b>（' + r.length + '回）</span>';
+    if (numeric) h += '<span>合計 <b>' + sum + '</b>　平均 <b>' + (nok ? sum / nok : 0).toFixed(2) + '</b>（' + nok + '回）</span>';
     return h + '</p>';
   }
 
   function stageHTML() {
-    var r = rows(), first = r.length && r[0].pid, t0 = r.length && r[0].t;
+    var all = rows(), hide = !isHost && !cfg.pubPress;
+    var r = hide ? all.filter(function (x) { return me && x.pid === me.pid; }) : all;
+    var first = '', t0 = r.length && r[0].t;
+    if (!hide) for (var k0 = 0; k0 < all.length; k0++) if (all[k0].ok) { first = all[k0].pid; break; }
     var tl = r.length ? r.map(function (x, k) {
-      return '<li><b>' + (k + 1) + '</b><span>' + esc(nm(x.pid)) + '</span><span class="chip" ' + sty(x.b) + '>' + esc(label(x.b)) + '</span><small>' + (k ? '+' + sec(x.t - t0) : '先頭') + '</small></li>';
+      return '<li' + (x.ok ? '' : ' class="ng"') + '><b>' + (k + 1) + '</b><span>' + esc(nm(x.pid)) + '</span><span class="chip" ' + sty(x.b) + '>' + esc(label(x.b)) + '</span><small>' + (k ? '+' + sec(x.t - t0) : '先頭') + (x.ok ? '' : ' 先着外') + '</small></li>';
     }).join('') : '<li class="empty">押された順にここへ表示</li>';
     var ids = Object.keys(players).sort(function (a, b) { return nm(a) < nm(b) ? -1 : 1; });
     var pn = ids.map(function (id) {
-      var m = presses[id] || {};
-      var chips = Object.keys(m).sort(function (a, b) { return m[a] - m[b]; }).map(function (b) { return '<span class="chip" ' + sty(b) + '>' + esc(label(b)) + '</span>'; }).join('');
-      return '<div class="pn' + (id === first ? ' first' : '') + (presses[id] ? ' lit' : '') + '"><i class="lamp"></i><div class="pname">' + esc(players[id].name) + '</div><div class="pchips">' + chips + '</div></div>';
+      var on = {}, any = false;
+      r.forEach(function (x) { if (x.pid === id && x.ok) { on[x.b] = 1; any = true; } });
+      var chips = '';
+      for (var i = 1; i <= cfg.n; i++) chips += '<span class="chip' + (on[i] ? ' lit' : '') + '" ' + sty(i) + '>' + esc(label(i)) + '</span>';
+      return '<div class="pn' + (id === first ? ' first' : '') + (any ? ' lit' : '') + '"><i class="lamp"></i><div class="pname">' + esc(players[id].name) + '</div><div class="pchips">' + chips + '</div></div>';
     }).join('');
     return '<div class="stage"><ol class="tl">' + tl + '</ol><div class="panels">' + (pn || '<p class="empty">参加者を待っています…</p>') + '</div></div>';
   }
@@ -135,16 +143,20 @@
   // ---------- host ----------
   function buildHost() {
     var url = location.origin + location.pathname + '?room=' + room;
-    app.innerHTML = '<div class="top"><div class="row"><span class="code">' + room + '</span></div><div class="row" id="ctl"></div><div class="row"><button id="cp">参加URL</button><button id="mn">設定</button></div></div>' +
-      '<div id="stg"></div>' +
-      '<div class="dlg" id="dlg" hidden><div class="dbox"><div class="row"><h3 style="margin:0;flex:1">設定</h3><button id="dx">閉じる</button></div>' +
-      '<div class="row"><label>ボタン数（1〜10）<input type="number" id="sn" min="1" max="10"></label><label>1人が押せる数<input type="number" id="sm" min="0" max="10"></label><small>0 = 制限なし</small></div>' +
-      '<p class="mut" style="margin:4px 0">ボタンの内容と色（ラベルが空ならキー番号。色はプリセットか自由選択）</p><div class="labs" id="labs"></div>' +
-      '<label class="row"><input type="checkbox" id="shw" data-a="show"> パネル・タイムラインを参加者にも表示する</label>' +
-      '<h3>詳細結果</h3><div id="res"></div><h3>参加者</h3><ul class="plist" id="ply"></ul><div class="row"><button id="clr">全問の履歴を削除</button></div></div></div>';
-    $('mn').onclick = function () { $('dlg').hidden = false; };
-    $('dx').onclick = function () { $('dlg').hidden = true; };
-    $('dlg').onclick = function (e) { if (e.target.id === 'dlg') $('dlg').hidden = true; };
+    var D = function (id, t, body) { return '<div class="dlg" id="' + id + '" hidden><div class="dbox"><div class="row"><h3 style="margin:0;flex:1">' + t + '</h3><button class="dx">閉じる</button></div>' + body + '</div></div>'; };
+    app.innerHTML = '<div class="top"><div class="row"><span class="code">' + room + '</span><span id="pl"></span></div></div><div id="stg"></div>' +
+      '<div class="bar"><div class="row" id="ctl"></div><div class="row"><button id="cp">参加URL</button><button id="mn">設定</button><button id="mb">ボタン設定</button><button id="mr">詳細結果</button></div></div>' +
+      D('dlg', '設定', '<div class="row"><label>1人が押せる数<input type="number" id="sm" min="0" max="10"></label><small>0 = 制限なし</small></div>' +
+        '<div class="row"><label>各ボタン先着<input type="number" id="sl" min="0" max="99"></label>名まで光る <small>0 = 制限なし（先着外も履歴には残ります）</small></div>' +
+        '<label class="row"><input type="checkbox" id="pp"> ボタンを押したかどうかを他の参加者に公開する</label>' +
+        '<label class="row"><input type="checkbox" id="shw"> パネル・タイムラインを参加者にも表示する</label>' +
+        '<h3>参加者</h3><ul class="plist" id="ply"></ul><div class="row"><button id="clr">全問の履歴を削除</button></div>') +
+      D('dlb', 'ボタン設定', '<div class="row"><label>ボタン数（1〜10）<input type="number" id="sn" min="1" max="10"></label></div>' +
+        '<p class="mut" style="margin:4px 0">ボタンの内容と色（ラベルが空ならキー番号。色はプリセットか自由選択）</p><div class="labs" id="labs"></div>') +
+      D('dlr', '詳細結果', '<div id="res"></div>');
+    [['mn', 'dlg'], ['mb', 'dlb'], ['mr', 'dlr']].forEach(function (p) { $(p[0]).onclick = function () { $(p[1]).hidden = false; }; });
+    Array.prototype.forEach.call(app.querySelectorAll('.dlg'), function (d) { d.onclick = function (e) { if (e.target === d || e.target.className === 'dx') d.hidden = true; }; });
+    $('sl').oninput = function () { base.child('config/lim').set(Math.max(0, Math.min(99, +this.value || 0))); };
     $('cp').onclick = function () { (navigator.clipboard ? navigator.clipboard.writeText(url) : Promise.reject()).then(function () { $('cp').textContent = 'コピーしました'; }, function () { prompt('参加URL', url); }); };
     $('sn').oninput = function () { var v = Math.max(1, Math.min(10, +this.value || 0)); if (this.value !== '' && v) base.child('config/n').set(v); };
     $('sm').oninput = function () { var v = Math.max(0, Math.min(10, +this.value || 0)); base.child('config/max').set(v); };
@@ -156,7 +168,7 @@
       if (a === 'stop') r.update({ state: 'closed' });
       if (a === 'next') r.set({ id: round.id + 1, state: 'idle' });
     };
-    $('dlg').onchange = function (e) { if (e.target.dataset.a === 'show') base.child('config/showResults').set(e.target.checked); };
+    app.onchange = function (e) { if (e.target.id === 'shw') base.child('config/showResults').set(e.target.checked); if (e.target.id === 'pp') base.child('config/pubPress').set(e.target.checked); };
     $('clr').onclick = function () { if (confirm('これまでの押下記録をすべて削除します。よろしいですか？')) base.child('presses').remove(); };
   }
   function renderLabs() {
@@ -172,9 +184,9 @@
   }
   function renderHost() {
     var st = round.state;
-    $('ctl').innerHTML = '<span class="pill ' + st + '">' + STL[st] + '</span><button class="pri" data-a="start"' + (st !== 'idle' ? ' disabled' : '') + '>受付開始</button>' +
+    $('pl').innerHTML = '<span class="pill ' + st + '">' + STL[st] + '</span>'; $('ctl').innerHTML = '<button class="pri" data-a="start"' + (st !== 'idle' ? ' disabled' : '') + '>受付開始</button>' +
       '<button data-a="stop"' + (st !== 'open' ? ' disabled' : '') + '>締切</button><button data-a="next">次の問題へ</button>';
-    $('shw').checked = !!cfg.showResults;
+    $('shw').checked = !!cfg.showResults; $('pp').checked = cfg.pubPress !== false; if (document.activeElement !== $('sl')) $('sl').value = cfg.lim || 0;
     $('stg').innerHTML = stageHTML();
     $('res').innerHTML = resultsHTML();
     var ids = Object.keys(players);
